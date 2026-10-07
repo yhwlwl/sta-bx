@@ -147,6 +147,16 @@ function randomToken() {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
+// 会话撤销要保留发起操作的那一条会话。摘要必须仍属于该账号才可用，
+// 过期或不属于该账号的摘要一律退化为 null（撤销全部），不会错误地保住别的会话。
+async function sessionHashToKeep(admin: AdminClient, userId: string, tokenHash: string) {
+  if (!tokenHash) return null
+  const { data, error } = await admin.from('app_sessions').select('token_hash')
+    .eq('user_id', userId).eq('token_hash', tokenHash).maybeSingle()
+  if (error) throw new Error('登录状态读取失败。')
+  return data?.token_hash ?? null
+}
+
 async function issueSession(userId: string, admin: AdminClient) {
   const token = randomToken()
   const tokenHash = await sha256Hex(token)
@@ -965,7 +975,10 @@ async function handle(req: Request) {
     return ok({ reset: Number(reset ?? 0) })
   }
   if (action === 'change_password') {
-    await rpc('app_change_password', { p_user_id: actor.user.id, p_current_password: requiredString(body.current_password, '请输入当前密码。'), p_new_password: requiredString(body.new_password, '请输入新密码。') })
+    // 改密码后撤销该账号的其他会话，只保留这次请求自己的会话。
+    // 保留标识由服务端从请求头推导，不接受客户端传入，令牌本身不离开服务端。
+    const keepHash = await sessionHashToKeep(admin, actor.user.id, await sha256Hex(getSessionToken(req)))
+    await rpc('app_change_password', { p_user_id: actor.user.id, p_current_password: requiredString(body.current_password, '请输入当前密码。'), p_new_password: requiredString(body.new_password, '请输入新密码。'), p_keep_token_hash: keepHash })
     return ok(null)
   }
 
