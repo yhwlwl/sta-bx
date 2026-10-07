@@ -10,7 +10,7 @@ Issue 列表：<https://github.com/yhwlwl/sta-bx/issues>
 
 ## 先记住三件事
 
-1. 每个 Issue 单独开一个分支和一个 Pull Request，不要把几个不相关的改动混在一起。
+1. 每个 Issue 单独开一个分支和一个 Pull Request，不要把几个不相关的改动混在一起。请尽量保留分支commit数量少，建议每个pr内一个大版本只commit一次。原因是，每一次commit都会消耗一次构建，每月额度有限。
 2. 不要直接向 main 推送，也不要把 .env.local、生产密码或 service_role 密钥提交到 GitHub。
 3. 开发和测试统一连接测试 Supabase 项目。生产环境只由项目负责人维护。
 
