@@ -135,6 +135,15 @@ function getSessionToken(req: Request) {
   return authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : ''
 }
 
+// 登录/注册限流的来源地址。与 createAdmin 里的审计 IP 取同一组请求头、用同一条正则校验，
+// 但这里不依赖 createAdmin：限流要在建库客户端之前就判定。
+function clientIp(req: Request) {
+  const source = ['cf-connecting-ip', 'x-real-ip', 'x-forwarded-for'].find((key) => req.headers.get(key))
+  if (!source) return ''
+  const address = req.headers.get(source)?.split(',')[0].trim() ?? ''
+  return /^[0-9a-fA-F:.]{3,64}$/.test(address) ? address : ''
+}
+
 async function sha256Hex(value: string) {
   const bytes = new TextEncoder().encode(value)
   const digest = await crypto.subtle.digest('SHA-256', bytes)
@@ -586,22 +595,63 @@ async function handle(req: Request) {
   }
 
   if (action === 'register') {
-    const result = await rpc('app_create_user', {
-      p_username: requiredString(body.username, '请输入用户名。'),
-      p_password: requiredString(body.password, '请输入密码。'),
-      p_full_name: String(body.full_name ?? '').trim(),
-      p_department: String(body.department ?? '').trim(),
-    })
+    // 注册没有账号维度可言（账号可能还不存在），所以只按来源 IP 限流：阈值比登录的账号维度松（20 次），
+    // 同一个出口 IP 下多名同学正常注册不会互相连坐，但足以挡住脚本批量刷号。
+    const ip = clientIp(req)
+    const gate = await rpc('app_login_gate', { p_username: '', p_ip: ip }) as { blocked?: boolean, retry_after_seconds?: number }
+    if (gate?.blocked) throw new HttpError(`注册尝试过于频繁，请在 ${Number(gate.retry_after_seconds ?? 0)} 秒后重试。`, 429)
+    const username = requiredString(body.username, '请输入用户名。')
+    let result
+    try {
+      result = await rpc('app_create_user', {
+        p_username: username,
+        p_password: requiredString(body.password, '请输入密码。'),
+        p_full_name: String(body.full_name ?? '').trim(),
+        p_department: String(body.department ?? '').trim(),
+      })
+    } catch (error) {
+      // 失败也要记账：否则反复提交非法用户名或重复用户名可以无限高速试探。
+      // 注册只按 IP 维度记账（p_scope='ip'）：此时账号可能还不存在，拿用户名当账号维度没有意义。
+      // 密码原文既不落日志也不进审计，这里只传布尔值。
+      await rpc('app_login_record_attempt', { p_username: username, p_password_correct: false, p_ip: ip, p_scope: 'ip' })
+      throw error
+    }
+    await rpc('app_login_record_attempt', { p_username: username, p_password_correct: true, p_ip: ip, p_scope: 'ip' })
     const session = await issueSession(result.id, admin)
     return ok({ user: result, roles: result.roles ?? [], session })
   }
 
   if (action === 'login') {
-    const result = await rpc('app_login', {
-      p_username: requiredString(body.username, '请输入用户名。'),
-      p_password: requiredString(body.password, '请输入密码。'),
-    })
-    if (!result) throw new HttpError('用户名或密码不正确。', 401)
+    const username = requiredString(body.username, '请输入用户名。')
+    const password = requiredString(body.password, '请输入密码。')
+    const ip = clientIp(req)
+
+    // 1) 限流检查必须在密码校验之前：命中限流时就完全不执行 crypt()，
+    //    这样暴力尝试不能无限高速消耗密码哈希的算力（验收标准第一条）。
+    const gate = await rpc('app_login_gate', { p_username: username, p_ip: ip }) as { blocked?: boolean, retry_after_seconds?: number }
+    if (gate?.blocked) {
+      // 明确告知还要等多久：触发限流本身已经说明这个账号正在被异常对待，
+      // 而「账号是否存在」在下面的 401 分支里依然完全不区分。
+      throw new HttpError(`登录尝试过于频繁，请在 ${Number(gate.retry_after_seconds ?? 0)} 秒后重试。`, 429)
+    }
+
+    // 2) 正常校验。
+    const result = await rpc('app_login', { p_username: username, p_password: password })
+
+    if (!result) {
+      // 3) 记失败（账号与 IP 两个维度各自原子自增），并写一条不含密码、不透露账号是否存在的审计事件。
+      const recorded = await rpc('app_login_record_attempt', { p_username: username, p_password_correct: false, p_ip: ip }) as { throttled?: boolean, retry_after_seconds?: number } | null
+      await audit(null, '登录失败', '用户名 @' + username)
+      // 跨过阈值的那一次就直接返回限流，而不是「先报密码错、下一次才 429」：
+      // 后者会让攻击者从响应差异里判断出账号是否已进入锁定状态。
+      if (recorded?.throttled) {
+        throw new HttpError(`登录尝试过于频繁，请在 ${Number(recorded.retry_after_seconds ?? 0)} 秒后重试。`, 429)
+      }
+      throw new HttpError('用户名或密码不正确。', 401)
+    }
+
+    // 4) 成功：清零账号维度的失败计数（IP 维度不清零，见迁移里的说明），再发会话。
+    await rpc('app_login_record_attempt', { p_username: username, p_password_correct: true, p_ip: ip })
     admin = createAdmin(req, requestId, action, result.id)
     const session = await issueSession(result.id, admin)
     await audit(result.id, '登录账号', '用户 @' + result.username)
