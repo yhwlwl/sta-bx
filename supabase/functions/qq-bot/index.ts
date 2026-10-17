@@ -156,13 +156,15 @@ async function handleEvent(d: Record<string, unknown>) {
   const content = String(d?.content ?? '')
   if (!groupOpenid || !msgId) return
 
-  // 只认设置里配置的那个群，别的群就算拉到机器人也不响应。
+  // 提醒目标群始终允许；另外可在设置里加白名单群（指令和提醒是两件事）。
   const { data: settings } = await admin
-    .from('settings').select('qq_group_openid,qq_notify_enabled').eq('id', 1).maybeSingle()
-  if (!settings || settings.qq_group_openid !== groupOpenid) {
+    .from('settings').select('qq_group_openid,qq_command_groups').eq('id', 1).maybeSingle()
+  const extra = Array.isArray(settings?.qq_command_groups) ? settings!.qq_command_groups as string[] : []
+  const allowed = [settings?.qq_group_openid ?? '', ...extra].filter(Boolean)
+  if (!allowed.includes(groupOpenid)) {
     await trace({
       eventType: 'GROUP_AT_MESSAGE_CREATE', groupOpenid, signatureOk: true,
-      outcome: '群不匹配，已忽略', detail: `收到=${groupOpenid} 配置=${settings?.qq_group_openid ?? '(空)'}`,
+      outcome: '群不匹配，已忽略', detail: `收到=${groupOpenid} 允许=${allowed.join(',') || '(无)'}`,
     })
     return
   }

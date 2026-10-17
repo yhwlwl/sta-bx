@@ -777,7 +777,7 @@ async function handle(req: Request) {
     requireRole(actor, 'admin')
     const emailServiceReady = Boolean((Deno.env.get('EMAIL_API_URL') ?? '').trim() && (Deno.env.get('EMAIL_API_KEY') ?? '').trim() && (Deno.env.get('EMAIL_FROM') ?? '').trim())
     const [settingResult, auditResult, pendingResult, sendingResult, sentResult, failedResult, cancelledResult] = await Promise.all([
-      admin.from('settings').select('threshold,registration_enabled,email_notify_enabled,email_notify_events,qq_notify_enabled,qq_group_openid,qq_notify_events').eq('id', 1).single(),
+      admin.from('settings').select('threshold,registration_enabled,email_notify_enabled,email_notify_events,qq_notify_enabled,qq_group_openid,qq_notify_events,qq_command_groups').eq('id', 1).single(),
       rpc('app_list_audit_logs', { p_actor_id: actor.user.id, p_page_size: 50 }),
       admin.from('notifications').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
       admin.from('notifications').select('*', { count: 'exact', head: true }).eq('status', 'sending'),
@@ -953,6 +953,15 @@ async function handle(req: Request) {
     requireRole(actor, 'admin')
     if (typeof body.enabled !== 'boolean' || !Array.isArray(body.events) || body.events.length > 7) throw new HttpError('QQ提醒设置无效。')
     await rpc('app_update_qq_notify', { p_actor_id: actor.user.id, p_enabled: body.enabled, p_group_openid: String(body.group_openid ?? '').trim(), p_events: body.events.map(String) })
+    return ok(null)
+  }
+  if (action === 'update_qq_command_groups') {
+    requireRole(actor, 'admin')
+    if (!Array.isArray(body.groups) || body.groups.length > 10) throw new HttpError('指令群设置无效。')
+    // 群里出错会静默不响应，所以格式在这里就挡住，不留给数据库报错。
+    const groups = body.groups.map((item) => String(item).trim()).filter(Boolean)
+    if (groups.some((item) => !/^[A-Za-z0-9_-]{16,128}$/.test(item))) throw new HttpError('群OpenID格式不正确（不是数字群号）。')
+    await rpc('app_update_qq_command_groups', { p_actor_id: actor.user.id, p_groups: groups })
     return ok(null)
   }
   if (action === 'reset_qq_notifications') {
