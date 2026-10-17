@@ -43,8 +43,20 @@ test('日志列表将全部筛选和快照交给共享 RPC', async () => {
   reset();
   const result = await request({action:'admin_audit', username:'legacy',event:'登录',ip:'',start:'2026-10-01',end:'2026-10-05',page:2,page_size:10,snapshot:'9007199254740993'});
   assert.equal(result.status,200);
-  assert.deepEqual(rpcCalls[0], {name:'app_list_audit_logs', args:{p_actor_id:'actor',p_username:'legacy',p_event:'登录',p_ip:'',p_start:'2026-10-01',p_end:'2026-10-05',p_page:2,p_page_size:10,p_snapshot:'9007199254740993'}});
+  assert.deepEqual(rpcCalls[0], {name:'app_list_audit_logs', args:{p_actor_id:'actor',p_username:'legacy',p_event:'登录',p_ip:'',p_start:'2026-10-01',p_end:'2026-10-05',p_page:2,p_page_size:10,p_snapshot:'9007199254740993',p_include_system:false}});
   assert.ok(!queries.includes('audit_logs'));
+});
+
+test('默认不返回系统日志，勾选后才带上', async () => {
+  reset();
+  await request({action:'admin_audit'});
+  assert.equal(rpcCalls[0].args.p_include_system,false,'默认隐藏定时任务日志');
+  reset();
+  await request({action:'admin_audit',include_system:true});
+  assert.equal(rpcCalls[0].args.p_include_system,true,'勾选后一并返回');
+  reset();
+  await request({action:'export_audit',include_system:true});
+  assert.equal(rpcCalls[0].args.p_include_system,true,'导出沿用同一个开关');
 });
 test('兼容 admin_data 通过共享投影返回日志，不能绕过权限', async () => {
   reset();

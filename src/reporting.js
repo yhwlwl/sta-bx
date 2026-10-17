@@ -12,6 +12,7 @@ export function auditFilterSummary(filters = {}) {
   if (filters.event) parts.push(`操作 含「${filters.event}」`);
   if (filters.ip) parts.push(`IP 含「${filters.ip}」`);
   if (filters.start || filters.end) parts.push(`${filters.start || '最早'} 至 ${filters.end || '现在'}`);
+  if (filters.include_system) parts.push('含系统日志');
   return parts.join(' · ');
 }
 export function auditDetail(row) {
