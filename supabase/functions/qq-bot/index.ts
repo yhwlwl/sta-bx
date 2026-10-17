@@ -78,7 +78,14 @@ export function parseCommand(content: string): string {
   return content.replace(/^[\s/／]+/, '').replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
-const HELP = '可用指令：\n/check 待办汇总\n/check resend 补发提醒'
+const HELP = [
+  '【可用指令】',
+  '/check 待办汇总',
+  '/check resend 补发提醒',
+  '/stat 本月概况',
+  '/search 关键字 查申请',
+  '/status 运行状态',
+].join('\n')
 
 let tokenCache: { value: string; expiresAt: number } | null = null
 
@@ -150,6 +157,43 @@ async function trace(entry: {
   }
 }
 
+/** 调一个只读 RPC 并取回文本；出错就把原因抛给上层，统一变成"执行失败"回一句话。 */
+async function rpcText(name: string, args: Record<string, unknown> = {}): Promise<string> {
+  const { data, error } = await admin.rpc(name, args)
+  if (error) throw new Error(`${name}: ${error.message}`)
+  return String(data ?? '')
+}
+
+/** 补发：先让 SQL 排好队，再借定时任务那条路径真正发出去，避免两套发送逻辑。 */
+async function resend(): Promise<string> {
+  const { data, error } = await admin.rpc('app_qq_resend')
+  if (error) throw new Error(`app_qq_resend: ${error.message}`)
+  if (!data?.ok) return `无法补发：${data?.reason ?? '未知原因'}`
+  const drained = await triggerDrain()
+  return `【补发提醒】\n新排队 ${data.enqueued ?? 0} 条，恢复失败 ${data.failed ?? 0} 条，当前待发 ${data.pending ?? 0} 条`
+    + (drained ? '\n已开始发送。' : '\n队列已排好，但触发发送失败，请稍后重试。')
+}
+
+/** 指令表：全部只读，只有 /check resend 会动队列（且幂等）。 */
+export async function runCommand(command: string): Promise<string> {
+  const [head = '', ...rest] = command.split(' ').filter(Boolean)
+  const arg = rest.join(' ')
+  switch (head) {
+    case '': case 'help': case '帮助': case '指令':
+      return HELP
+    case 'check': case '检查':
+      return arg === 'resend' || arg === '补发' ? await resend() : await rpcText('app_qq_check_report')
+    case 'stat': case 'stats': case '统计': case '概况':
+      return await rpcText('app_qq_stat')
+    case 'search': case '查': case '查单':
+      return arg ? await rpcText('app_qq_search', { p_keyword: arg }) : '【搜索】请写成 /search 关键字，例如：/search 物资'
+    case 'status': case '状态':
+      return await rpcText('app_qq_status')
+    default:
+      return `没有这个指令。\n\n${HELP}`
+  }
+}
+
 async function handleEvent(d: Record<string, unknown>) {
   const groupOpenid = String(d?.group_openid ?? '')
   const msgId = String(d?.id ?? '')
@@ -170,22 +214,14 @@ async function handleEvent(d: Record<string, unknown>) {
   }
 
   const command = parseCommand(content)
-  let text = HELP
-
-  if (command === 'check' || command === '检查') {
-    const { data, error } = await admin.rpc('app_qq_check_report')
-    text = error ? '待办检查失败，请稍后再试。' : String(data ?? '')
-  } else if (command === 'check resend' || command === 'check 补发') {
-    const { data, error } = await admin.rpc('app_qq_resend')
-    if (error) {
-      text = '补发失败，请稍后再试。'
-    } else if (!data?.ok) {
-      text = `无法补发：${data?.reason ?? '未知原因'}`
-    } else {
-      const drained = await triggerDrain()
-      text = `【补发提醒】\n新排队 ${data.enqueued ?? 0} 条，恢复失败 ${data.failed ?? 0} 条，当前待发 ${data.pending ?? 0} 条`
-        + (drained ? '\n已开始发送。' : '\n队列已排好，但触发发送失败，请稍后重试。')
-    }
+  let text: string
+  try {
+    text = await runCommand(command)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error('群指令执行失败', reason)
+    await audit('QQ群指令失败', `${command || '(空)'} · ${reason}`.slice(0, 300))
+    text = '指令执行失败，请稍后再试。'
   }
 
   try {
