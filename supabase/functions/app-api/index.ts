@@ -552,9 +552,14 @@ async function handle(req: Request) {
       let errorText = ''
       try {
         const appUrl = (Deno.env.get('APP_URL') ?? '').trim()
+        // 正文由数据库在领取时算好（申请人、申请事项、金额、部门、时间、状态，首行 @ 负责人）。
+        // 旧库里没有 content 字段时退回原来的固定文案，保证灰度期间不会发出空消息。
+        const content = typeof note.content === 'string' && note.content.trim()
+          ? note.content
+          : `【财务报销平台】有新的「${note.event}」动态，请相关成员登录平台查看。`
         const response = await fetch(`${apiBase}/v2/groups/${encodeURIComponent(note.group_openid)}/messages`, {
           method: 'POST', headers: { 'content-type': 'application/json', authorization: `QQBot ${tokenData.access_token}` },
-          body: JSON.stringify({ msg_type: 0, content: `【财务报销平台】有新的「${note.event}」动态，请相关成员登录平台查看。${appUrl ? `\n${appUrl}` : ''}` }),
+          body: JSON.stringify({ msg_type: 0, content: appUrl ? `${content}\n${appUrl}` : content }),
           signal: AbortSignal.timeout(5000),
         })
         const result = await response.json().catch(() => ({}))
@@ -792,12 +797,28 @@ async function handle(req: Request) {
     const failures = failureRows.map((row) => ({ id: row.id, event: row.event, attempts: row.attempts, last_error: row.last_error, username: failureNames.get(row.recipient_user_id) ?? '成员', created_at: row.created_at }))
     const qqResult = await admin.from('qq_notifications').select('id,event,status,attempts,last_error').in('status', ['pending','sending','failed']).order('id', { ascending: false }).limit(10)
     if (qqResult.error) throw new Error('QQ提醒队列读取失败。')
+    // 已绑定的群成员：只回传账号、姓名和 openid（openid 不是密钥，管理员本来就要能核对它）。
+    const qqBindingResult = await admin.from('qq_member_bindings').select('user_id,member_openid').order('created_at')
+    if (qqBindingResult.error) throw new Error('QQ群成员绑定读取失败。')
+    const bindingRows = qqBindingResult.data ?? []
+    const bindingUsers = bindingRows.length
+      ? await admin.from('app_users').select('id,username,full_name').in('id', [...new Set(bindingRows.map((row) => row.user_id))])
+      : { data: [], error: null }
+    if (bindingUsers.error) throw new Error('用户信息读取失败。')
+    const bindingNames = new Map((bindingUsers.data ?? []).map((user) => [user.id, { username: user.username, full_name: user.full_name }]))
+    const qqBindings = bindingRows.map((row) => ({
+      user_id: row.user_id,
+      member_openid: row.member_openid,
+      username: bindingNames.get(row.user_id)?.username ?? '成员',
+      full_name: bindingNames.get(row.user_id)?.full_name ?? '',
+    }))
     return ok({
       qq_notify_enabled: settingResult.data.qq_notify_enabled,
       qq_group_openid: settingResult.data.qq_group_openid,
       qq_notify_events: settingResult.data.qq_notify_events,
       qq_service_configured: Boolean(Deno.env.get('QQ_BOT_APP_ID') && Deno.env.get('QQ_BOT_APP_SECRET')),
       qq_queue: qqResult.data,
+      qq_bindings: qqBindings,
       threshold: settingResult.data.threshold,
       registration_enabled: settingResult.data.registration_enabled,
       email_notify_enabled: settingResult.data.email_notify_enabled,
@@ -938,6 +959,20 @@ async function handle(req: Request) {
   if (action === 'send_qq_notifications') {
     requireRole(actor, 'admin')
     return ok(await drainQqNotifications(actor.user.id))
+  }
+  if (action === 'set_qq_binding') {
+    requireRole(actor, 'admin')
+    await rpc('app_set_qq_binding', {
+      p_actor_id: actor.user.id,
+      p_username: requiredString(body.username, '请输入平台用户名。'),
+      p_member_openid: requiredString(body.member_openid, '请输入该成员的 member_openid。'),
+    })
+    return ok(null)
+  }
+  if (action === 'delete_qq_binding') {
+    requireRole(actor, 'admin')
+    await rpc('app_delete_qq_binding', { p_actor_id: actor.user.id, p_username: requiredString(body.username, '请选择成员。') })
+    return ok(null)
   }
 
   if (action === 'update_email_notify') {
