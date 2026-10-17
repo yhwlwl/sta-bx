@@ -344,7 +344,7 @@ test('提醒类型配置：逐类开关入库、非枚举值被拒、只有管�
   assert.match(migration, /cancelled := cancelled \+ disabled/);
   // app-api：读配置、校验请求体、把事件数组透传给 RPC，并在管理数据里回传当前勾选。
   assert.match(api, /admin\.from\('settings'\)\.select\('email_notify_enabled,email_notify_events'\)\.eq\('id', 1\)\.single\(\)/);
-  assert.match(api, /admin\.from\('settings'\)\.select\('threshold,registration_enabled,email_notify_enabled,email_notify_events,qq_notify_enabled,qq_group_openid,qq_notify_events'\)\.eq\('id', 1\)\.single\(\)/);
+  assert.match(api, /admin\.from\('settings'\)\.select\('threshold,registration_enabled,email_notify_enabled,email_notify_events,qq_notify_enabled,qq_group_openid,qq_notify_events(,qq_command_groups)?'\)\.eq\('id', 1\)\.single\(\)/);
   assert.match(api, /if \(!Array\.isArray\(body\.events\)\) throw new HttpError\('请选择要发送的提醒类型。'\)/);
   assert.match(api, /await rpc\('app_update_email_notify', \{ p_actor_id: actor\.user\.id, p_enabled: body\.enabled, p_events: events \}\)/);
   assert.match(api, /email_notify_events: Array\.isArray\(settingResult\.data\.email_notify_events\) \? settingResult\.data\.email_notify_events : \[\]/);

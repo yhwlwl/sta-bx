@@ -125,4 +125,25 @@ test('/check 待办汇总与 /check resend 补发', { timeout: 120000 }, async (
   const off = await rpc('app_qq_resend', {});
   assert.equal(off.ok, false);
   assert.match(off.reason, /未开启/);
+
+  // 指令群白名单：提醒群之外，还允许在别的群用 /check
+  const save = (groups) => rpc('app_update_qq_command_groups', { p_actor_id: actor, p_groups: groups });
+  const stored = async () => (await db.query('select qq_command_groups from public.settings where id=1')).rows[0].qq_command_groups;
+
+  assert.deepEqual(await stored(), [], '默认没有额外指令群');
+  await save(['ACE5A6F82F1859574D66FFD79D86FC6C', 'ACE5A6F82F1859574D66FFD79D86FC6C']);
+  assert.deepEqual(await stored(), ['ACE5A6F82F1859574D66FFD79D86FC6C'], '重复项应去重');
+
+  // 填错格式会让群里永远静默无响应，所以必须在这里就报错
+  await assert.rejects(() => save(['123456']), /格式不正确/);
+  await assert.rejects(() => save(['短了']), /格式不正确/);
+  await assert.rejects(() => save(Array.from({ length: 11 }, (_, i) => `AAAAAAAABBBBBBBB${i}`)), /最多 10 个/);
+  await assert.rejects(
+    () => rpc('app_update_qq_command_groups', { p_actor_id: owner, p_groups: [] }),
+    /没有管理员权限/,
+  );
+
+  // 清空白名单后只剩提醒群
+  await save([]);
+  assert.deepEqual(await stored(), []);
 });
