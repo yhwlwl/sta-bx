@@ -131,6 +131,25 @@ async function audit(event: string, detail: string) {
   }
 }
 
+/** 每个进到本函数的请求都留痕：签名对不对、哪个群、最后做了什么。 */
+async function trace(entry: {
+  op?: number, eventType?: string, groupOpenid?: string,
+  signatureOk: boolean, outcome: string, detail?: string,
+}) {
+  try {
+    await admin.from('qq_webhook_log').insert({
+      op: entry.op ?? null,
+      event_type: entry.eventType ?? '',
+      group_openid: entry.groupOpenid ?? '',
+      signature_ok: entry.signatureOk,
+      outcome: entry.outcome,
+      detail: (entry.detail ?? '').slice(0, 500),
+    })
+  } catch {
+    console.error('回调日志写入失败')
+  }
+}
+
 async function handleEvent(d: Record<string, unknown>) {
   const groupOpenid = String(d?.group_openid ?? '')
   const msgId = String(d?.id ?? '')
@@ -140,7 +159,13 @@ async function handleEvent(d: Record<string, unknown>) {
   // 只认设置里配置的那个群，别的群就算拉到机器人也不响应。
   const { data: settings } = await admin
     .from('settings').select('qq_group_openid,qq_notify_enabled').eq('id', 1).maybeSingle()
-  if (!settings || settings.qq_group_openid !== groupOpenid) return
+  if (!settings || settings.qq_group_openid !== groupOpenid) {
+    await trace({
+      eventType: 'GROUP_AT_MESSAGE_CREATE', groupOpenid, signatureOk: true,
+      outcome: '群不匹配，已忽略', detail: `收到=${groupOpenid} 配置=${settings?.qq_group_openid ?? '(空)'}`,
+    })
+    return
+  }
 
   const command = parseCommand(content)
   let text = HELP
@@ -164,9 +189,18 @@ async function handleEvent(d: Record<string, unknown>) {
   try {
     await reply(groupOpenid, msgId, text)
     await audit('QQ群指令', `${command || '(空)'} · ${groupOpenid.slice(0, 8)}…`)
+    await trace({
+      eventType: 'GROUP_AT_MESSAGE_CREATE', groupOpenid, signatureOk: true,
+      outcome: '已回复', detail: `指令=${command || '(空)'}`,
+    })
   } catch (error) {
-    console.error('群指令处理失败', error instanceof Error ? error.message : error)
-    await audit('QQ群指令失败', String(error instanceof Error ? error.message : error).slice(0, 300))
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error('群指令处理失败', reason)
+    await audit('QQ群指令失败', reason.slice(0, 300))
+    await trace({
+      eventType: 'GROUP_AT_MESSAGE_CREATE', groupOpenid, signatureOk: true,
+      outcome: '回复失败', detail: reason,
+    })
   }
 }
 
@@ -179,6 +213,7 @@ Deno.serve(async (request) => {
   const signature = request.headers.get('x-signature-ed25519') ?? ''
   const timestamp = request.headers.get('x-signature-timestamp') ?? ''
   if (!(await verifySignature(appSecret, timestamp, raw, signature))) {
+    EdgeRuntime.waitUntil(trace({ signatureOk: false, outcome: '签名校验失败', detail: raw }))
     return new Response(JSON.stringify({ error: 'invalid signature' }), {
       status: 401, headers: { 'Content-Type': 'application/json' },
     })
@@ -188,6 +223,7 @@ Deno.serve(async (request) => {
   try {
     payload = JSON.parse(raw)
   } catch {
+    EdgeRuntime.waitUntil(trace({ signatureOk: true, outcome: '请求体不是 JSON', detail: raw }))
     return new Response('bad json', { status: 400 })
   }
 
@@ -197,6 +233,7 @@ Deno.serve(async (request) => {
     const plainToken = String(d?.plain_token ?? '')
     const eventTs = String(d?.event_ts ?? '')
     const sign = await signHex(appSecret, eventTs + plainToken)
+    EdgeRuntime.waitUntil(trace({ op: 13, signatureOk: true, outcome: '回调地址验证', detail: raw }))
     return new Response(JSON.stringify({ plain_token: plainToken, signature: sign }), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     })
