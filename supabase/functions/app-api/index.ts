@@ -236,13 +236,16 @@ export function readAuditFilters(body: Record<string, unknown>, withPage: boolea
   if ((start && !validDay(start)) || (end && !validDay(end)) || (start && end && start > end)) throw new HttpError('请选择有效的日期范围。')
   filters.start = start
   filters.end = end
+  // 定时任务写的日志（actor 为空）默认不返回：它们每 5 分钟两条，会把真人操作挤掉。
+  // 只有明确勾选「显示系统日志」才带上，导出与分页沿用同一个开关。
+  const includeSystem = body.include_system === true || body.include_system === 'true'
   const snapshot = body.snapshot == null || body.snapshot === '' ? null : String(body.snapshot)
   if (snapshot !== null && (!/^\d{1,19}$/.test(snapshot) || BigInt(snapshot) > 9223372036854775807n)) throw new HttpError('日志快照无效。')
-  if (!withPage) return { filters, page: 1, pageSize: 0, snapshot }
+  if (!withPage) return { filters, includeSystem, page: 1, pageSize: 0, snapshot }
   const rawPage = body.page === undefined || body.page === '' ? 1 : Number(body.page)
   const rawPageSize = body.page_size === undefined || body.page_size === '' ? 20 : Number(body.page_size)
   if (!Number.isInteger(rawPage) || rawPage < 1 || !AUDIT_PAGE_SIZES.includes(rawPageSize)) throw new HttpError('分页参数无效。')
-  return { filters, page: rawPage, pageSize: rawPageSize, snapshot }
+  return { filters, includeSystem, page: rawPage, pageSize: rawPageSize, snapshot }
 }
 
 /** Operator-facing description of the active filters, reused in the export header row. */
@@ -854,12 +857,12 @@ async function handle(req: Request) {
   // shipping every row to the browser.
   if (action === 'admin_audit') {
     requireRole(actor, 'admin')
-    const { filters, page, pageSize, snapshot } = readAuditFilters(body, true)
+    const { filters, includeSystem, page, pageSize, snapshot } = readAuditFilters(body, true)
     const [paged, events] = await Promise.all([
       rpc('app_list_audit_logs', {
         p_actor_id: actor.user.id, p_username: filters.username, p_event: filters.event,
         p_ip: filters.ip, p_start: filters.start, p_end: filters.end,
-        p_page: page, p_page_size: pageSize, p_snapshot: snapshot,
+        p_page: page, p_page_size: pageSize, p_snapshot: snapshot, p_include_system: includeSystem,
       }),
       rpc('app_audit_log_events', { p_actor_id: actor.user.id }),
     ])
@@ -886,14 +889,14 @@ async function handle(req: Request) {
 
   if (action === 'export_audit') {
     requireRole(actor, 'admin')
-    const { filters, snapshot: requestedSnapshot } = readAuditFilters(body, false)
+    const { filters, includeSystem, snapshot: requestedSnapshot } = readAuditFilters(body, false)
     const rows: Record<string, unknown>[] = []
     let snapshot = requestedSnapshot, scope = ''
     for (let page = 1; ; page++) {
       const batch = await rpc('app_list_audit_logs', {
         p_actor_id: actor.user.id, p_username: filters.username, p_event: filters.event,
         p_ip: filters.ip, p_start: filters.start, p_end: filters.end,
-        p_page: page, p_page_size: 1000, p_snapshot: snapshot,
+        p_page: page, p_page_size: 1000, p_snapshot: snapshot, p_include_system: includeSystem,
       })
       if (batch.total > 100000) throw new HttpError('数据较多，请缩小筛选范围后导出。')
       snapshot = batch.snapshot

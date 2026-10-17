@@ -5,7 +5,7 @@ import { NOTIFY_QUEUE, NOTIFY_EVENTS, NOTIFY_DEFAULT_EVENTS, NOTIFY_EVENT_GROUPS
 
 const Button = ({ kind = '', children, ...props }) => <button className={`button ${kind}`} {...props}>{children}</button>;
 const ErrorText = ({ children }) => children ? <div className="error-text" role="alert">{children}</div> : null;
-const NO_AUDIT_FILTERS = { username: '', event: '', ip: '', start: '', end: '' };
+const NO_AUDIT_FILTERS = { username: '', event: '', ip: '', start: '', end: '', include_system: false };
 const AUDIT_TEXT_KEYS = ['username', 'event', 'ip'];
 const auditFiltersActive = (filters) => Object.values(filters).some(Boolean);
 
@@ -113,7 +113,7 @@ export function AuditDirectory({ identity, revision, filters, onFiltersChange, f
       setLoading(false);
     }, textFilter ? 250 : 0);
     return () => { mounted = false; clearTimeout(timer); };
-  }, [filters.username, filters.event, filters.ip, filters.start, filters.end, page, pageSize, revision, filtersRevision, refresh]);
+  }, [filters.username, filters.event, filters.ip, filters.start, filters.end, filters.include_system, page, pageSize, revision, filtersRevision, refresh]);
   const change = (key, value) => { onFiltersChange({ ...filters, [key]: value }); setPage(1); };
   const rows = result?.logs || [];
   return <section className="panel detail-panel admin-section audit-directory">
@@ -125,6 +125,8 @@ export function AuditDirectory({ identity, revision, filters, onFiltersChange, f
       <label className="audit-date">开始日期<input type="date" value={filters.start} onChange={(e) => change('start', e.target.value)} /></label>
       <label className="audit-date">结束日期<input type="date" value={filters.end} onChange={(e) => change('end', e.target.value)} /></label>
       {auditFiltersActive(filters) && <Button kind="quiet" type="button" onClick={() => { onFiltersChange({ ...NO_AUDIT_FILTERS }); setPage(1); }}>重置</Button>}
+      {/* 定时任务每 5 分钟写两条日志，默认藏起来；要查提醒发送情况时再勾上。 */}
+      <label className="check-row audit-system-toggle"><input type="checkbox" checked={filters.include_system === true} onChange={(e) => change('include_system', e.target.checked)} />显示系统日志</label>
     </div><ErrorText>{error}</ErrorText>
     <div aria-busy={loading}>{loading ? <div className="panel-empty">加载中…</div> : rows.length ? <div className="table-scroll audit-table"><table><thead><tr><th>时间</th><th>用户名</th><th>IP 地址</th><th>操作</th><th>具体内容</th><th><span className="sr-only">详情</span></th></tr></thead>
       <tbody>{rows.map((row) => <tr key={row.id}><td className="audit-time">{formatDateTime(row.created_at)}</td><td>@{row.username}</td><td className="audit-ip">{row.ip_address || '未记录'}</td><td>{row.event}</td><td className="audit-detail">{auditDetail(row) || '—'}</td><td><Button kind="quiet" type="button" onClick={() => setDetailed(row)}>查看</Button></td></tr>)}</tbody></table></div>
