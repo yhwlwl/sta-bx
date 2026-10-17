@@ -54,7 +54,13 @@ test('QQ 独立队列、并发领取、复核、API错误、限频和发送记�
     const payload = JSON.parse(message.options.body);
     assert.equal(payload.msg_type, 0);
     assert.equal('msg_id' in payload, false);
-    assert.ok(!payload.content.includes('私密标题') && !payload.content.includes('隐私姓名'));
+    // 旧契约是"群里只发提醒类型，不暴露申请内容"；20261007120000 起群消息改为带详情
+    // （前提是目标群本身就是财委/主席的工作群），这里改为断言详情确实进去了。
+    assert.ok(payload.content.includes('申请人：隐私姓名'), '群消息要写清是谁申请的');
+    assert.ok(payload.content.includes('申请事项：私密标题'), '群消息要写清申请了什么');
+    assert.ok(payload.content.includes('金额：¥10.00'), '金额按元保留两位小数');
+    assert.ok(payload.content.includes('当前状态：待主席审批'), '当前状态用中文标签');
+    assert.ok(payload.content.includes('https://example.com'), 'APP_URL 仍然附在末尾');
     assert.equal((await drain(actor)).sent, 0, '已发送不重复领取');
     await app(); mode = 'businessError';
     assert.equal((await drain(actor)).retried, 1);
@@ -111,6 +117,26 @@ test('QQ 独立队列、并发领取、复核、API错误、限频和发送记�
       assert.equal(cron.status, 200); assert.equal(cron.data.skipped, true);
       assert.equal((await db.query("select count(*)::int n from public.audit_logs where event='发送QQ提醒失败'")).rows[0].n, 1);
     } finally { globalThis.Deno = originalDeno; delete globalThis.__qqTestClient; }
+
+    // @ 负责人：登记 member_openid 后，消息首行变成 <qqbot-at-user/>，并在末尾列出负责人姓名。
+    // 先把群固定回 group：上面的用例把目标群换成了别的值，绑定与解除都按"当前设置的群"生效。
+    await configure(true, group);
+    await db.query("insert into public.qq_member_bindings(group_openid,user_id,member_openid) values($1,$2,'MEMBEROPENID0000000000000000000001')", [group, owner]);
+    const { rows: [{ c: mentioned }] } = await db.query("select private.qq_notify_content($1,'退回修改',$2,now()) c", [id, group]);
+    assert.match(mentioned, /^<qqbot-at-user id="MEMBEROPENID0000000000000000000001" \/> 退回修改/);
+    assert.match(mentioned, /负责人：隐私姓名/);
+    // 没登记的成员不会让消息变成空白：退回"负责人：待确认"或列出姓名，但绝不能没有正文。
+    const { rows: [{ c: unbound }] } = await db.query("select private.qq_notify_content($1,'待财委审批',$2,now()) c", [id, 'FFEEDDCCBBAA00998877665544332211']);
+    assert.ok(unbound.startsWith('【财务报销平台】待财委审批'));
+    assert.ok(unbound.includes('申请事项：私密标题'));
+    // 重复绑定同一个 openid 给另一个人时，旧绑定必须被摘掉（否则会 @ 错对象）。
+    const { rows: [{ id: other }] } = await db.query("select (private.app_insert_user('qq_other','Test-only-1369666','另一位','测试')->>'id')::uuid id");
+    await rpc('app_set_qq_binding', { p_actor_id: actor, p_username: 'qq_other', p_member_openid: 'MEMBEROPENID0000000000000000000001' });
+    assert.equal((await db.query('select count(*)::int n from public.qq_member_bindings where group_openid=$1', [group])).rows[0].n, 1);
+    await rpc('app_delete_qq_binding', { p_actor_id: actor, p_username: 'qq_other' });
+    assert.equal((await db.query('select count(*)::int n from public.qq_member_bindings where group_openid=$1', [group])).rows[0].n, 0);
+    // 非管理员不能改绑定。
+    assert.equal((await admin.rpc('app_set_qq_binding', { p_actor_id: other, p_username: 'qq_user', p_member_openid: 'MEMBEROPENID0000000000000000000002' })).error != null, true);
 
   } finally { globalThis.fetch = originalFetch; await db.close(); }
 });
