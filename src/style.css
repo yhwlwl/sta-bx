@@ -54,3 +54,15 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
 @media(max-width:900px){.settings-grid.admin-settings{grid-template-columns:1fr}.sta-brand strong{font-size:.9rem}.sta-logo{width:70px;height:44px}}
 @media(max-width:620px){.topbar .brand-button{gap:8px}.sta-logo{width:58px;height:38px}.sta-brand strong{font-size:.83rem}.sta-brand>span{font-size:.75rem}.auth-brand .sta-logo{width:75px;height:46px}.auth-brand .sta-brand strong{font-size:.93rem}.topbar .user-menu{font-size:.8rem}}
 .warn{color:#b64152}.queue-failures{margin:6px 0 0;padding-left:18px;font-size:.8rem;color:#7d8a9e;list-style:disc}.queue-failures li{border-left:0;padding:0;margin:2px 0;font-size:.8rem;color:#7d8a9e}
+/* 待办提醒（Issue #9）：导航角标 + 工作台待办分组条 */
+.nav-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;margin-left:6px;padding:0 5px;border-radius:9px;background:#e5484d;color:#fff;font-size:11px;font-weight:700;line-height:1}
+.bucket-bar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+.bucket-chip{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border:1px solid #dbe3f0;border-radius:16px;background:#fff;color:#243047;font-size:.85rem;font-weight:600;cursor:pointer}
+.bucket-chip:hover{border-color:#315fe8;color:#315fe8}
+.bucket-chip.current{border-color:#315fe8;background:#eef3ff;color:#315fe8}
+.bucket-chip.empty{color:#8b97ab}
+.bucket-chip.has-unread{border-color:#f0c9cb}
+.bucket-chip .bucket-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#eef2f7;color:#526078;font-size:.75rem;font-weight:700}
+.bucket-chip.current .bucket-count{background:#dbe6ff;color:#315fe8}
+.bucket-chip.has-unread .bucket-count{background:#fdecec;color:#c62a2f}
+.unread-dot{width:8px;height:8px;border-radius:50%;background:#e5484d}

@@ -5,6 +5,7 @@ import { apiRequest } from './api.js';
 import { normalizeEmail, validateEmail } from './notify-rules.js';
 import { ApplicationForm, ApplicationDetail } from './workflow.jsx';
 import { AdminPanel } from './admin.jsx';
+import { summarizePending, visibleBuckets, pendingItemsOf, bucketLabel } from './pending-rules.js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -122,26 +123,58 @@ function App() {
   return <Workspace session={session} identity={identity} onProfileUpdate={(patch) => setIdentity((current) => current ? { ...current, profile: { ...current.profile, ...patch } } : current)} />;
 }
 
+// 待办角标：只显示未读数量，进入对应列表后清零。
+function PendingBadge({ count }) {
+  if (!count) return null;
+  return <span className="nav-badge" aria-label={`${count} 条未读待办`}>{count > 99 ? '99+' : count}</span>;
+}
+
+// 工作台分组条：数量与列表同源，未读用圆点提示。
+function BucketBar({ identity, summary, active, onSelect }) {
+  const buckets = visibleBuckets(identity);
+  if (buckets.length === 0) return null;
+  return <div className="bucket-bar" role="tablist" aria-label="待办分组">{buckets.map((bucket) => {
+    const stat = summary.buckets.find((item) => item.key === bucket.key) || { pending: 0, unread: 0 };
+    return <button key={bucket.key} role="tab" aria-selected={active === bucket.key} className={`bucket-chip ${active === bucket.key ? 'current' : ''} ${stat.unread > 0 ? 'has-unread' : ''} ${stat.pending === 0 ? 'empty' : ''}`} onClick={() => onSelect(bucket.key)}>
+      {bucket.label}<span className="bucket-count">{stat.pending}</span>{stat.unread > 0 && <span className="unread-dot" aria-hidden="true" />}
+    </button>;
+  })}</div>;
+}
+
 function Workspace({ session, identity, onProfileUpdate }) {
   const [view, setView] = useState('dashboard');
   const [selectedId, setSelectedId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [pending, setPending] = useState([]);
   const roles = identity.roles || [];
   const open = (next, id = null) => { setSelectedId(id); setView(next); };
   const refresh = () => setRefreshKey((value) => value + 1);
+  useEffect(() => {
+    let mounted = true;
+    apiRequest('list_pending').then((result) => { if (mounted && !result.error) setPending(Array.isArray(result.data) ? result.data : []); });
+    return () => { mounted = false; };
+  }, [identity.profile.id, refreshKey]);
+  const summary = summarizePending(pending);
+  // 进入列表即标记已查看：先本地清掉未读让角标立刻变化，再让服务端落库；服务端失败时下次刷新会把它带回来。
+  const markSeen = (keys) => {
+    const target = [...new Set(keys)].filter((key) => pending.some((item) => item.bucket === key && item.unread !== false));
+    if (target.length === 0) return;
+    setPending((current) => current.map((item) => (target.includes(item.bucket) ? { ...item, unread: false } : item)));
+    apiRequest('mark_pending_seen', { buckets: target });
+  };
   const logout = async () => { await apiRequest('logout'); localStorage.removeItem(SESSION_KEY); window.location.reload(); };
   return <div className="app-shell">
     <header className="topbar"><button className="brand-button" onClick={() => open('dashboard')}><Brand /></button>
-      <nav><button className={view === 'dashboard' ? 'current' : ''} onClick={() => open('dashboard')}>我的申请</button>{roles.length > 0 && <button className={view === 'team' ? 'current' : ''} onClick={() => open('team')}>工作台</button>}{roles.includes('admin') && <button className={view === 'admin' ? 'current' : ''} onClick={() => open('admin')}>设置</button>}<button className={view === 'account' ? 'current' : ''} onClick={() => open('account')}>账户设置</button></nav>
+      <nav><button className={view === 'dashboard' ? 'current' : ''} onClick={() => open('dashboard')}>我的申请<PendingBadge count={summary.unreadMine} /></button>{roles.length > 0 && <button className={view === 'team' ? 'current' : ''} onClick={() => open('team')}>工作台<PendingBadge count={summary.unreadTeam} /></button>}{roles.includes('admin') && <button className={view === 'admin' ? 'current' : ''} onClick={() => open('admin')}>设置</button>}<button className={view === 'account' ? 'current' : ''} onClick={() => open('account')}>账户设置</button></nav>
       <div className="user-menu"><span>{identity.profile?.full_name || session.user.username}</span><button className="logout" onClick={logout}>退出</button></div>
     </header>
-    <main className="content">{view === 'dashboard' || view === 'team' ? <Dashboard identity={identity} team={view === 'team'} onOpen={open} refreshKey={refreshKey} /> : view === 'new' ? <ApplicationForm identity={identity} onDone={(id) => { refresh(); open('detail', id); }} onCancel={() => open('dashboard')} /> : view === 'detail' ? <ApplicationDetail id={selectedId} identity={identity} onBack={() => open('dashboard')} onRefresh={refresh} /> : view === 'account' ? <AccountPanel identity={identity} onProfileUpdate={onProfileUpdate} /> : <AdminPanel identity={identity} />}</main>
+    <main className="content">{view === 'dashboard' || view === 'team' ? <Dashboard identity={identity} team={view === 'team'} pending={pending} onMarkSeen={markSeen} onOpen={open} refreshKey={refreshKey} /> : view === 'new' ? <ApplicationForm identity={identity} onDone={(id) => { refresh(); open('detail', id); }} onCancel={() => open('dashboard')} /> : view === 'detail' ? <ApplicationDetail id={selectedId} identity={identity} onBack={() => open('dashboard')} onRefresh={refresh} /> : view === 'account' ? <AccountPanel identity={identity} onProfileUpdate={onProfileUpdate} /> : <AdminPanel identity={identity} />}</main>
     <footer>成都七中科学技术协会 财务报销平台 · 本网站由 网络部 搭建运营 · 版本号 1.0.0</footer>
   </div>;
 }
 
-function Dashboard({ identity, team, onOpen, refreshKey }) {
-  const [applications, setApplications] = useState([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [filter, setFilter] = useState(''); const [query, setQuery] = useState('');
+function Dashboard({ identity, team, pending, onMarkSeen, onOpen, refreshKey }) {
+  const [applications, setApplications] = useState([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [filter, setFilter] = useState(''); const [query, setQuery] = useState(''); const [bucket, setBucket] = useState('');
   useEffect(() => {
     let mounted = true; setLoading(true);
     (async () => {
@@ -152,11 +185,22 @@ function Dashboard({ identity, team, onOpen, refreshKey }) {
   const visible = applications.filter((item) => (!filter || item.status === filter) && (!query || `${item.title} ${item.department}`.toLowerCase().includes(query.toLowerCase())));
   const active = applications.filter((item) => !['rejected', 'cancelled'].includes(item.status));
   const paid = applications.filter((item) => item.status === 'paid');
+  // 工作台分组视图直接渲染待办清单本身，所以"角标数量"和"列表条数"不可能对不上。
+  const summary = summarizePending(pending);
+  const pendingRows = pendingItemsOf(pending, bucket);
+  const selectBucket = (key) => { const next = bucket === key ? '' : key; setBucket(next); if (next) onMarkSeen([next]); };
   return <>
     <div className="heading-row"><div><p className="eyebrow">资金管理</p><h1>{team ? '工作台' : '我的申请'}</h1></div><Button onClick={() => onOpen('new')}>＋ 新建申请</Button></div>
     <div className="stat-grid"><div className="stat-card highlight"><span>申请总额</span><strong>{money(active.reduce((sum, item) => sum + Number(item.amount), 0))}</strong></div><div className="stat-card"><span>进行中</span><strong>{active.filter((item) => !['paid', 'draft'].includes(item.status)).length}<small> 笔</small></strong></div><div className="stat-card"><span>已付款</span><strong>{money(paid.reduce((sum, item) => sum + Number(item.amount), 0))}</strong></div></div>
-    <section className="panel list-panel"><div className="toolbar"><input aria-label="搜索" placeholder="搜索标题或部门" value={query} onChange={(e) => setQuery(e.target.value)} /><select aria-label="状态筛选" value={filter} onChange={(e) => setFilter(e.target.value)}><option value="">全部状态</option>{Object.entries(STATUS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
-      {loading ? <div className="panel-empty"><Spinner /></div> : error ? <div className="panel-empty"><ErrorText error={error} /></div> : visible.length === 0 ? <div className="panel-empty"><div className="empty-mark">＋</div><h2>这里还没有申请</h2><p>准备好了，就创建第一笔。</p><Button kind="secondary" onClick={() => onOpen('new')}>新建申请</Button></div> : <div className="table-scroll"><table><thead><tr><th>申请</th>{team && <th>申请人</th>}<th>金额</th><th>状态</th><th>更新日期</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id} onClick={() => onOpen('detail', item.id)}><td><button className="link-button">{item.title}</button><span className="subtext">{item.department} · {item.category}</span></td>{team && <td>{item.owner_id === identity.profile.id ? '我' : item.owner_id.slice(0, 8)}</td>}<td className="numeric">{money(item.amount)}</td><td><StatusBadge status={item.status} /></td><td className="muted">{dateText(item.updated_at)}</td></tr>)}</tbody></table></div>}
+    {team && <BucketBar identity={identity} summary={summary} active={bucket} onSelect={selectBucket} />}
+    <section className="panel list-panel">
+      {bucket ? <>
+        <div className="toolbar"><strong>{bucketLabel(bucket)}</strong><span className="muted">共 {pendingRows.length} 条待办</span></div>
+        {pendingRows.length === 0 ? <div className="panel-empty"><h2>这个分组没有待办</h2><p>申请流转或被处理后会自动从这里消失。</p></div> : <div className="table-scroll"><table><thead><tr><th>申请</th><th>申请人</th><th>金额</th><th>状态</th><th>更新日期</th></tr></thead><tbody>{pendingRows.map((item) => <tr key={item.application_id} onClick={() => onOpen('detail', item.application_id)}><td><button className="link-button">{item.title}</button><span className="subtext">{bucketLabel(item.bucket)} · 版本 {item.version}</span></td><td>{item.owner_id === identity.profile.id ? '我' : item.owner_name}</td><td className="numeric">{money(item.amount)}</td><td><StatusBadge status={item.status} /></td><td className="muted">{dateText(item.updated_at)}</td></tr>)}</tbody></table></div>}
+      </> : <>
+        <div className="toolbar"><input aria-label="搜索" placeholder="搜索标题或部门" value={query} onChange={(e) => setQuery(e.target.value)} /><select aria-label="状态筛选" value={filter} onChange={(e) => setFilter(e.target.value)}><option value="">全部状态</option>{Object.entries(STATUS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
+        {loading ? <div className="panel-empty"><Spinner /></div> : error ? <div className="panel-empty"><ErrorText error={error} /></div> : visible.length === 0 ? <div className="panel-empty"><div className="empty-mark">＋</div><h2>这里还没有申请</h2><p>准备好了，就创建第一笔。</p><Button kind="secondary" onClick={() => onOpen('new')}>新建申请</Button></div> : <div className="table-scroll"><table><thead><tr><th>申请</th>{team && <th>申请人</th>}<th>金额</th><th>状态</th><th>更新日期</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id} onClick={() => onOpen('detail', item.id)}><td><button className="link-button">{item.title}</button><span className="subtext">{item.department} · {item.category}</span></td>{team && <td>{item.owner_id === identity.profile.id ? '我' : item.owner_id.slice(0, 8)}</td>}<td className="numeric">{money(item.amount)}</td><td><StatusBadge status={item.status} /></td><td className="muted">{dateText(item.updated_at)}</td></tr>)}</tbody></table></div>}
+      </>}
     </section>
   </>;
 }

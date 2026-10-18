@@ -47,6 +47,10 @@ const NOTIFY_EVENT_STATUS: Record<string, string> = {
   '拒绝申请': 'rejected',
   '已付款': 'paid',
 }
+// 工作台待办类型（Issue #9）。必须与迁移里 private.app_pending_bucket 的状态映射以及
+// 前端 src/pending-rules.js 的 PENDING_BUCKETS 一致（tests/pending-reminders.test.mjs 逐项比对）；
+// app_mark_pending_seen 也只接受这几个键。
+const PENDING_BUCKETS = ['finance', 'chair', 'payment', 'returned', 'qr']
 // 队列消费参数与 src/notify-rules.js 中的同名常量保持一致（Edge Function 无法直接引用前端模块）。
 const NOTIFY_BATCH = 100
 const NOTIFY_ROUNDS = 8
@@ -652,6 +656,22 @@ async function handle(req: Request) {
     const { data, error } = await query
     if (error) throw new Error(error.message)
     return ok(data ?? [])
+  }
+
+  if (action === 'list_pending') {
+    // 待办由数据库按调用者身份算好：审批待办排除申请人本人（不能自审），付款登记允许本人，
+    // 退回修改与待补充收款码只属于申请人本人；普通管理员不会因为 admin 角色拿到流程待办。
+    const pending = await rpc('app_list_pending', { p_actor_id: actor.user.id })
+    return ok(Array.isArray(pending) ? pending : [])
+  }
+
+  if (action === 'mark_pending_seen') {
+    // 进入列表即视为已查看；状态或版本变化后数据库会把这条待办重新算成未读。
+    const raw = body.buckets === undefined || body.buckets === null ? null : body.buckets
+    if (raw !== null && (!Array.isArray(raw) || raw.some((bucket) => !PENDING_BUCKETS.includes(String(bucket))))) throw new HttpError('待办类型无效。')
+    const buckets = raw === null ? null : raw.map((bucket) => String(bucket))
+    const marked = await rpc('app_mark_pending_seen', { p_actor_id: actor.user.id, p_buckets: buckets })
+    return ok({ marked: Number(marked ?? 0) })
   }
 
   if (action === 'create_application') {
