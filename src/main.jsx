@@ -35,8 +35,11 @@ function AccountPanel({ identity, onProfileUpdate }) {
     try {
       const result = await apiRequest('change_password', { current_password: passwords.current, new_password: passwords.next });
       if (result.error) throw new Error(result.error.message);
-      setPasswords({ current: '', next: '' }); setNotice('密码已更新。');
-    } catch (err) { setError(err.message || '密码没有更新，请重试。'); }
+      setPasswords({ current: '', next: '' }); setNotice('密码已更新。其他设备上的登录已退出，当前设备保持登录。');
+    } catch (err) {
+      const message = err.message || '密码没有更新，请重试。';
+      setError(/登录已过期|请先登录/.test(message) ? `${message} 其他设备上的登录可能已被撤销，请重新登录。` : message);
+    }
     finally { setBusy(false); }
   };
   const bindEmail = async (event) => {
@@ -57,7 +60,7 @@ function AccountPanel({ identity, onProfileUpdate }) {
   return <><div className="heading-row"><div><p className="eyebrow">账户</p><h1>账户设置</h1></div></div>
     <section className="panel detail-panel account-panel"><h2>邮箱提醒</h2><p className="muted">是否收到邮件提醒由管理员在设置里配置：待办类（轮到你审批、你的申请被退回待修改、要你补充收款信息）默认开启；结果类（申请被拒绝、已完成打款）默认关闭，管理员需要时会打开。</p><p className="hint">地址由本人填写，系统不验证邮箱归属，也不会提示退信：填错就只是收不到提醒，请填常用邮箱（QQ、微信或学校邮箱到达率最好）。提醒内容会包含申请人、部门与金额，只有需要你处理的人才会收到。</p>
       <form className="stack-form" onSubmit={bindEmail}><fieldset disabled={emailBusy}><label>邮箱地址<input type="email" maxLength="254" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="例如 you@example.com" /></label><ErrorText error={emailError} />{emailNotice && <div className="notice" role="status">{emailNotice}</div>}<Button kind="secondary">保存邮箱</Button></fieldset></form></section>
-    <section className="panel detail-panel account-panel"><h2>修改密码</h2><p className="muted">更新后，下次登录请使用新密码。</p><form className="stack-form" onSubmit={submit}><fieldset disabled={busy}><label>当前密码<input required type="password" autoComplete="current-password" value={passwords.current} onChange={(e) => setPasswords({ ...passwords, current: e.target.value })} /></label><label>新密码<input required minLength="10" maxLength="72" type="password" autoComplete="new-password" value={passwords.next} onChange={(e) => setPasswords({ ...passwords, next: e.target.value })} /></label><ErrorText error={error} />{notice && <div className="notice" role="status">{notice}</div>}<Button kind="secondary">更新密码</Button></fieldset></form></section>
+    <section className="panel detail-panel account-panel"><h2>修改密码</h2><p className="muted">更新后，本次登录保持有效，其他设备上的登录会立即退出，下次登录请使用新密码。</p><form className="stack-form" onSubmit={submit}><fieldset disabled={busy}><label>当前密码<input required type="password" autoComplete="current-password" value={passwords.current} onChange={(e) => setPasswords({ ...passwords, current: e.target.value })} /></label><label>新密码<input required minLength="10" maxLength="72" type="password" autoComplete="new-password" value={passwords.next} onChange={(e) => setPasswords({ ...passwords, next: e.target.value })} /></label><ErrorText error={error} />{notice && <div className="notice" role="status">{notice}</div>}<Button kind="secondary">更新密码</Button></fieldset></form></section>
   </>;
 }
 
