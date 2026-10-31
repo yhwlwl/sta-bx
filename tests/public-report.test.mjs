@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { transform } from 'esbuild';
 import { filterPublicRecords, summarizePublicRecords } from '../src/public-report.js';
+import { buildPublicReportCsv, publicReportSnapshotKey } from '../src/public-report-export.js';
 
 let hookCursor = 0;
 let hookValues = [];
 globalThis.__publicReportReact = {
+  Fragment: 'fragment',
   createElement(type, props, ...children) { return { type, props: { ...props, children } }; },
   useState(initial) {
     const index = hookCursor++;
@@ -15,13 +17,18 @@ globalThis.__publicReportReact = {
   },
   useEffect() {},
   useMemo(factory) { return factory(); },
+  useRef(initial) { const index = hookCursor++; if (!(index in hookValues)) hookValues[index] = { current: initial }; return hookValues[index]; },
 };
-globalThis.__publicReportApi = async () => ({ data: { enabled: true, records: [] }, error: null });
+let publicApiResult = { data: { enabled: true, records: [] }, error: null };
+let publicApiRequest = async () => publicApiResult;
+globalThis.__publicReportApi = (...args) => publicApiRequest(...args);
 globalThis.__publicReportHelpers = { filterPublicRecords, summarizePublicRecords };
+globalThis.__publicReportExportHelpers = { buildPublicReportCsv, publicReportSnapshotKey };
 const componentSource = readFileSync('src/public-report.jsx', 'utf8')
-  .replace(/import React, \{[^}]+\} from 'react';\r?\n/, 'const React = globalThis.__publicReportReact; const { useEffect, useMemo, useState } = React;\n')
+  .replace(/import React, \{[^}]+\} from 'react';\r?\n/, 'const React = globalThis.__publicReportReact; const { useEffect, useMemo, useRef, useState } = React;\n')
   .replace(/import \{ apiRequest \} from '.\/api.js';\r?\n/, 'const { apiRequest } = globalThis.__publicReportApiModule;\n')
-  .replace(/import \{ filterPublicRecords, summarizePublicRecords \} from '.\/public-report.js';\r?\n/, 'const { filterPublicRecords, summarizePublicRecords } = globalThis.__publicReportHelpers;\n');
+  .replace(/import \{ filterPublicRecords, summarizePublicRecords \} from '.\/public-report.js';\r?\n/, 'const { filterPublicRecords, summarizePublicRecords } = globalThis.__publicReportHelpers;\n')
+  .replace(/import \{ buildPublicReportCsv, publicReportSnapshotKey \} from '.\/public-report-export.js';\r?\n/, 'const { buildPublicReportCsv, publicReportSnapshotKey } = globalThis.__publicReportExportHelpers;\n');
 globalThis.__publicReportApiModule = { apiRequest: globalThis.__publicReportApi };
 const { code: componentCode } = await transform(componentSource, { loader: 'jsx', format: 'esm' });
 const { PublicReport } = await import(`data:text/javascript;base64,${Buffer.from(componentCode).toString('base64')}`);
@@ -180,4 +187,211 @@ test('切换到自定义日期保留当前范围，日期预设范围也可再�
   tree = renderPublicReport();
   currentDateInputs = findElements(tree, (element) => element.type === 'input' && element.props.type === 'date');
   assert.deepEqual(currentDateInputs.map((input) => input.props.value), semesterDates);
+});
+
+test('下载前重新确认开关与记录；公式文本被降级为文本且只导出筛选后的五个公开字段', async () => {
+  const records = [
+    { payment_date: '2026-10-02', amount: 12.34, applicant_name: '\n@HYPERLINK("https://invalid")', category: '\t=1+1', department: '活动,"组"\n二组', purpose: 'private', owner_id: 'secret', actor_id: 'secret' },
+    { payment_date: '2026-10-03', amount: 99, applicant_name: '交通组成员', category: '交通', department: '其他组', purpose: 'private too', owner_id: 'another secret' },
+  ];
+  hookValues = [];
+  hookValues[0] = { start: '2026-10-01', end: '2026-10-31' };
+  hookValues[2] = records;
+  hookValues[3] = true;
+  hookValues[4] = false;
+  hookValues[6] = records[0].category;
+  hookValues[7] = records[0].department;
+  let apiCalls = 0;
+  publicApiRequest = async (action, payload) => { apiCalls += 1; assert.equal(action, 'public_financial_report'); assert.deepEqual(payload, { start: '2026-10-01', end: '2026-10-31' }); return { data: { enabled: true, records }, error: null }; };
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  const previousCreateObjectUrl = URL.createObjectURL;
+  const previousRevokeObjectUrl = URL.revokeObjectURL;
+  const downloaded = [];
+  URL.createObjectURL = (blob) => { downloaded.push(blob); return 'blob:csv'; };
+  URL.revokeObjectURL = () => {};
+  globalThis.document = { createElement: () => ({ click() { downloaded.push(this); } }) };
+  globalThis.window = { setTimeout, requestAnimationFrame: (callback) => callback(), print() { throw new Error('download must not print'); } };
+  try {
+    const tree = renderPublicReport();
+    const button = findElements(tree, (element) => element.type === 'button' && element.props.children.includes('下载 CSV'))[0];
+    assert.ok(button, JSON.stringify(findElements(tree, (element) => element.type === 'button').map((element) => element.props.children)));
+    await button.props.onClick();
+    assert.equal(apiCalls, 1);
+    assert.equal(downloaded.length, 2, hookValues[9]);
+    const anchor = downloaded[1];
+    assert.equal(anchor.download, '财报_2026-10-01_2026-10-31.csv');
+    const csv = new TextDecoder('utf-8', { ignoreBOM: true }).decode(await downloaded[0].arrayBuffer());
+    assert.ok(csv.startsWith('\uFEFF'));
+    assert.match(csv, /"统计周期","2026-10-01 至 2026-10-31"/);
+    assert.match(csv, /"说明","仅含已付款记录"/);
+    assert.match(csv, /"付款日期","报销人","费用类别","部门 \/ 活动","金额（元）"/);
+    assert.ok(csv.includes('"\'\t=1+1"'));
+    assert.ok(csv.includes('"\'\n@HYPERLINK(""https://invalid"")"'));
+    assert.ok(csv.includes('"活动,""组""\n二组"'));
+    assert.ok(csv.includes('"=HYPERLINK') === false);
+    assert.ok(!csv.includes('交通') && !csv.includes('其他组'));
+    assert.ok(!csv.includes('private') && !csv.includes('secret') && !csv.includes('purpose'));
+    assert.deepEqual(publicReportSnapshotKey(records), publicReportSnapshotKey(records.map((record) => ({ ...record, purpose: 'another secret' }))));
+    assert.notEqual(publicReportSnapshotKey(records), publicReportSnapshotKey(records.map((record, index) => ({ ...record, applicant_name: index ? record.applicant_name : '姓名已更新' }))));
+  } finally {
+    publicApiRequest = async () => publicApiResult;
+    globalThis.document = previousDocument;
+    globalThis.window = previousWindow;
+    if (previousCreateObjectUrl) URL.createObjectURL = previousCreateObjectUrl; else delete URL.createObjectURL;
+    if (previousRevokeObjectUrl) URL.revokeObjectURL = previousRevokeObjectUrl; else delete URL.revokeObjectURL;
+  }
+});
+
+test('空周期生成有元数据和暂无数据行的 CSV；异常周期与用户公式拒绝或转义', () => {
+  const csv = buildPublicReportCsv({ start: '2026-10-01', end: '2026-10-31', records: [], generatedAt: new Date('2026-10-31T00:00:00.000Z') });
+  assert.match(csv, /"统计周期","2026-10-01 至 2026-10-31"/);
+  assert.match(csv, /"生成时间（北京时间）"/);
+  assert.match(csv, /"说明","仅含已付款记录"/);
+  assert.match(csv, /"付款日期","报销人","费用类别","部门 \/ 活动","金额（元）"/);
+  assert.match(csv, /"暂无数据","","","",""/);
+  assert.throws(() => buildPublicReportCsv({ start: '2026-02-30', end: '2026-03-01', records: [] }));
+  const formulaCsv = buildPublicReportCsv({ start: '2026-10-01', end: '2026-10-31', category: '+cmd', department: '@SUM(A1)', records: [] });
+  assert.match(formulaCsv, /"费用类别","'\+cmd"/);
+  assert.match(formulaCsv, /"部门 \/ 活动","'@SUM\(A1\)"/);
+  const formulaNames = ['=1+1', '+SUM(A1)', '-2', '@SUM(A1)', ' \t=1+1', '\n@SUM(A1)'];
+  for (const name of formulaNames) {
+    const protectedCsv = buildPublicReportCsv({ start: '2026-10-01', end: '2026-10-31', records: [{ payment_date: '2026-10-02', amount: 1, applicant_name: name }] });
+    assert.ok(protectedCsv.includes(`"'${name}"`), `姓名公式前缀未处理：${JSON.stringify(name)}`);
+  }
+});
+
+test('关闭开关、请求失败、筛选竞态或数据变化时不下载', async () => {
+  const row = { payment_date: '2026-10-02', amount: 12.34, applicant_name: '张三', category: '材料', department: '活动组' };
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  const previousCreateObjectUrl = URL.createObjectURL;
+  const downloads = [];
+  URL.createObjectURL = () => { downloads.push('blob'); return 'blob:csv'; };
+  globalThis.document = { createElement: () => ({ click() { downloads.push('click'); } }) };
+  globalThis.window = { setTimeout, requestAnimationFrame: (callback) => callback(), print() {} };
+  const setup = () => {
+    hookValues = [];
+    hookValues[0] = { start: '2026-10-01', end: '2026-10-31' }; hookValues[2] = [row]; hookValues[3] = true; hookValues[4] = false;
+    const tree = renderPublicReport();
+    return findElements(tree, (element) => element.type === 'button' && element.props.children.includes('下载 CSV'))[0];
+  };
+  try {
+    let button = setup();
+    let apiCalls = 0;
+    publicApiRequest = async () => { apiCalls += 1; return { data: { enabled: false, records: [] }, error: null }; };
+    await button.props.onClick();
+    assert.equal(downloads.length, 0);
+    assert.equal(apiCalls, 1);
+
+    button = setup();
+    publicApiRequest = async () => { apiCalls += 1; return { data: null, error: { message: 'request failed' } }; };
+    await button.props.onClick();
+    assert.equal(downloads.length, 0);
+
+    button = setup();
+    let resolvePending;
+    publicApiRequest = () => { apiCalls += 1; return new Promise((resolve) => { resolvePending = resolve; }); };
+    const callsBeforeRace = apiCalls;
+    const inFlight = button.props.onClick();
+    await Promise.resolve();
+    renderPublicReport();
+    const second = button.props.onClick();
+    hookValues[6] = '交通';
+    renderPublicReport();
+    resolvePending({ data: { enabled: true, records: [row] }, error: null });
+    await Promise.all([inFlight, second]);
+    assert.equal(downloads.length, 0);
+    assert.equal(apiCalls, callsBeforeRace + 1);
+    assert.equal(hookValues[2][0], row); // changed filters discard the pending response
+
+    button = setup();
+    let resolveClosed;
+    publicApiRequest = () => new Promise((resolve) => { resolveClosed = resolve; });
+    const closePending = button.props.onClick();
+    hookValues[6] = '交通';
+    renderPublicReport();
+    resolveClosed({ data: { enabled: false, records: [] }, error: null });
+    await closePending;
+    assert.equal(hookValues[3], false); // a close response still disables the page after filters move
+    assert.deepEqual(hookValues[2], []);
+
+    button = setup();
+    publicApiRequest = async () => ({ data: { enabled: true, records: [{ ...row, amount: 50 }] }, error: null });
+    await button.props.onClick();
+    assert.equal(downloads.length, 0);
+    assert.equal(hookValues[2][0].amount, 50); // newer data is shown before allowing another export
+
+    button = setup();
+    publicApiRequest = async () => ({ data: { enabled: true, records: [{ ...row, applicant_name: '李四' }] }, error: null });
+    await button.props.onClick();
+    assert.equal(downloads.length, 0);
+    assert.equal(hookValues[2][0].applicant_name, '李四');
+    assert.match(hookValues[9], /数据已有更新/);
+
+    button = setup();
+    let resolveDateCycle;
+    publicApiRequest = () => new Promise((resolve) => { resolveDateCycle = resolve; });
+    const dateCycleExport = button.props.onClick();
+    const firstTree = renderPublicReport();
+    const startInput = findElements(firstTree, (element) => element.type === 'input' && element.props.type === 'date')[0];
+    startInput.props.onChange({ target: { value: '2026-10-03' } });
+    renderPublicReport();
+    startInput.props.onChange({ target: { value: '2026-10-01' } }); // A → B → A must still invalidate the old snapshot
+    renderPublicReport();
+    resolveDateCycle({ data: { enabled: true, records: [row] }, error: null });
+    await dateCycleExport;
+    assert.equal(downloads.length, 0);
+
+    button = setup();
+    const requestCount = apiCalls;
+    hookValues[4] = true; // a page query is in progress while an old handler is still referenced
+    renderPublicReport();
+    await button.props.onClick();
+    assert.equal(apiCalls, requestCount);
+
+    button = setup();
+    let resolveUnmounted;
+    publicApiRequest = () => new Promise((resolve) => { resolveUnmounted = resolve; });
+    const unmounted = button.props.onClick();
+    hookValues[11].current = false;
+    resolveUnmounted({ data: { enabled: true, records: [row] }, error: null });
+    await unmounted;
+    assert.equal(downloads.length, 0);
+  } finally {
+    publicApiRequest = async () => publicApiResult;
+    globalThis.document = previousDocument;
+    globalThis.window = previousWindow;
+    if (previousCreateObjectUrl) URL.createObjectURL = previousCreateObjectUrl; else delete URL.createObjectURL;
+  }
+});
+
+test('打印动作重新验证数据，并调用浏览器打印', async () => {
+  const row = { payment_date: '2026-10-02', amount: 12.34, applicant_name: '张三', category: '材料', department: '活动组' };
+  hookValues = [];
+  hookValues[0] = { start: '2026-10-01', end: '2026-10-31' }; hookValues[2] = [row]; hookValues[3] = true; hookValues[4] = false;
+  let printed = 0; let apiCalls = 0; let frame;
+  const previousWindow = globalThis.window;
+  globalThis.window = { setTimeout, requestAnimationFrame: (callback) => { frame = callback; }, print: () => { printed += 1; } };
+  publicApiRequest = async () => { apiCalls += 1; return { data: { enabled: true, records: [row] }, error: null }; };
+  try {
+    const tree = renderPublicReport();
+    const button = findElements(tree, (element) => element.type === 'button' && element.props.children.includes('打印 / 保存 PDF'))[0];
+    await button.props.onClick();
+    assert.equal(apiCalls, 1);
+    assert.equal(printed, 0);
+    assert.match(hookValues[10], /\d{4}/); // the print-only report metadata has a generation time
+    frame();
+    assert.equal(printed, 1);
+  } finally {
+    publicApiRequest = async () => publicApiResult;
+    globalThis.window = previousWindow;
+  }
+});
+
+test('打印样式隐藏筛选和按钮并允许表格跨页显示', () => {
+  const css = readFileSync('src/style.css', 'utf8');
+  assert.match(css, /@media print[\s\S]*?\.public-report-filters[\s\S]*?display:none!important/);
+  assert.match(css, /@media print[\s\S]*?\.public-report-list \.table-scroll\{overflow:visible\}/);
+  assert.match(css, /@media print[\s\S]*?\.public-report-list tr\{break-inside:avoid;page-break-inside:avoid\}/);
 });
