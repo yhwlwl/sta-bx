@@ -5,6 +5,7 @@ import { apiRequest } from './api.js';
 import { normalizeEmail, validateEmail } from './notify-rules.js';
 import { ApplicationForm, ApplicationDetail } from './workflow.jsx';
 import { AdminPanel } from './admin.jsx';
+import { PublicReport } from './public-report.jsx';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -85,7 +86,7 @@ function AuthScreen() {
     <section className="auth-card">
       <div className="auth-brand"><Brand /></div>
       <h1>{mode === 'login' ? '欢迎回来' : '创建账号'}</h1>
-      <p className="auth-lead">{mode === 'login' ? '登录后查看申请进展。' : '注册后即可提交第一笔申请。'}</p>
+      <p className="auth-lead">{mode === 'login' ? '登录后查看申请进展。' : '注册后即可提交第一笔申请。'}</p><p className="public-report-auth-link"><a href="/report">查看公开财报</a></p>
       <div className="tabs"><button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setError(''); }}>登录</button>{registration === true && <button className={mode === 'signup' ? 'active' : ''} onClick={() => { setMode('signup'); setError(''); }}>注册</button>}</div>
       {registration === false && <p className="hint">暂不开放注册，请联系管理员创建账号。</p>}
       <form onSubmit={submit} className="stack-form">
@@ -163,5 +164,5 @@ function Dashboard({ identity, team, onOpen, refreshKey }) {
 
 
 
-function Root() { return <App />; }
+function Root() { return window.location.pathname.replace(/\/$/, '') === '/report' ? <PublicReport /> : <App />; }
 createRoot(document.getElementById('root')).render(<Root />);

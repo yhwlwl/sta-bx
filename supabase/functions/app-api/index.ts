@@ -219,6 +219,34 @@ function requiredString(value: unknown, message: string) {
 const AUDIT_PAGE_SIZES = [10, 20, 50, 100]
 const AUDIT_TEXT_LIMITS: Record<string, number> = { username: 80, event: 80, ip: 64 }
 const BEIJING_DAY = /^\d{4}-\d{2}-\d{2}$/
+const PUBLIC_REPORT_MAX_DAYS = 1826
+
+export function readPublicReportDates(body: Record<string, unknown>) {
+  const start = String(body.start ?? '').trim()
+  const end = String(body.end ?? '').trim()
+  const validDay = (value: string) => BEIJING_DAY.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value
+  if (!validDay(start) || !validDay(end) || start > end) throw new HttpError('请选择有效的开始和结束日期。')
+  const days = (Date.parse(end) - Date.parse(start)) / 86400000
+  if (days > PUBLIC_REPORT_MAX_DAYS) throw new HttpError('日期范围不能超过五年。')
+  return { start, end }
+}
+
+export function projectPublicFinancialRecords(value: unknown) {
+  if (!Array.isArray(value) || value.length > 5000) throw new Error('公开财报记录数量无效。')
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') throw new Error('公开财报记录格式无效。')
+    const row = item as Record<string, unknown>
+    const paymentDate = String(row.payment_date ?? '')
+    const category = String(row.category ?? '')
+    const department = String(row.department ?? '')
+    const amount = Number(row.amount)
+    if (!BEIJING_DAY.test(paymentDate) || !Number.isFinite(Date.parse(paymentDate)) || new Date(paymentDate).toISOString().slice(0, 10) !== paymentDate
+      || !Number.isFinite(amount) || amount <= 0 || amount > 10000000 || category.length > 80 || department.length > 80) {
+      throw new Error('公开财报记录格式无效。')
+    }
+    return { payment_date: paymentDate, amount, category, department }
+  })
+}
 
 /**
  * The single definition of what an audit-log filter means. The paged table and the
@@ -588,9 +616,16 @@ async function handle(req: Request) {
   }
 
   if (action === 'public_settings') {
-    const { data, error } = await admin.from('settings').select('registration_enabled').eq('id', 1).single()
+    const { data, error } = await admin.from('settings').select('registration_enabled,public_financial_report_enabled').eq('id', 1).single()
     if (error) throw new Error('注册设置读取失败。')
     return ok(data)
+  }
+
+  if (action === 'public_financial_report') {
+    const { start, end } = readPublicReportDates(body)
+    const result = await rpc('app_public_financial_report', { p_start: start, p_end: end }) as { enabled?: boolean; records?: unknown }
+    if (result?.enabled !== true) return ok({ enabled: false, records: [] })
+    return ok({ enabled: true, records: projectPublicFinancialRecords(result.records) })
   }
 
   if (action === 'register') {
@@ -777,7 +812,7 @@ async function handle(req: Request) {
     requireRole(actor, 'admin')
     const emailServiceReady = Boolean((Deno.env.get('EMAIL_API_URL') ?? '').trim() && (Deno.env.get('EMAIL_API_KEY') ?? '').trim() && (Deno.env.get('EMAIL_FROM') ?? '').trim())
     const [settingResult, auditResult, pendingResult, sendingResult, sentResult, failedResult, cancelledResult] = await Promise.all([
-      admin.from('settings').select('threshold,registration_enabled,email_notify_enabled,email_notify_events,qq_notify_enabled,qq_group_openid,qq_notify_events,qq_command_groups').eq('id', 1).single(),
+      admin.from('settings').select('threshold,registration_enabled,public_financial_report_enabled,email_notify_enabled,email_notify_events,qq_notify_enabled,qq_group_openid,qq_notify_events,qq_command_groups').eq('id', 1).single(),
       rpc('app_list_audit_logs', { p_actor_id: actor.user.id, p_page_size: 50 }),
       admin.from('notifications').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
       admin.from('notifications').select('*', { count: 'exact', head: true }).eq('status', 'sending'),
@@ -824,6 +859,7 @@ async function handle(req: Request) {
       qq_bindings: qqBindings,
       threshold: settingResult.data.threshold,
       registration_enabled: settingResult.data.registration_enabled,
+      public_financial_report_enabled: settingResult.data.public_financial_report_enabled === true,
       email_notify_enabled: settingResult.data.email_notify_enabled,
       email_notify_events: Array.isArray(settingResult.data.email_notify_events) ? settingResult.data.email_notify_events : [],
       email_service_configured: emailServiceReady,
@@ -873,6 +909,13 @@ async function handle(req: Request) {
     requireRole(actor, 'admin')
     if (typeof body.enabled !== 'boolean') throw new HttpError('请选择是否允许注册。')
     await rpc('app_update_registration', { p_actor_id: actor.user.id, p_enabled: body.enabled })
+    return ok(null)
+  }
+
+  if (action === 'update_public_financial_report') {
+    requireRole(actor, 'admin')
+    if (typeof body.enabled !== 'boolean') throw new HttpError('请选择是否公开财报。')
+    await rpc('app_update_public_financial_report', { p_actor_id: actor.user.id, p_enabled: body.enabled })
     return ok(null)
   }
 
