@@ -149,6 +149,7 @@ export function AdminPanel({ identity }) {
   const [emailNotify, setEmailNotify] = useState(false);
   const [emailEvents, setEmailEvents] = useState([...NOTIFY_DEFAULT_EVENTS]);
   const [newUser, setNewUser] = useState(emptyUser);
+  const [publicFinancialReport, setPublicFinancialReport] = useState(false);
   const [auditFilters, setAuditFilters] = useState({ ...NO_AUDIT_FILTERS });
   // The audit export and the audit list read the same filter object, so they can never disagree.
   const [auditFiltersRevision, setAuditFiltersRevision] = useState(0);
@@ -159,7 +160,7 @@ export function AdminPanel({ identity }) {
   const load = async () => {
     const result = await apiRequest('admin_data'); if (result.error) throw new Error(result.error.message);
     setQqNotify(result.data.qq_notify_enabled === true); setQqGroup(result.data.qq_group_openid || ''); setQqCmdGroups((result.data.qq_command_groups || []).join('\n')); setQqEvents(normalizeNotifyEvents(result.data.qq_notify_events));
-    setData(result.data); setThreshold(String(result.data.threshold)); setRegistration(result.data.registration_enabled); setEmailNotify(result.data.email_notify_enabled === true); setEmailEvents(normalizeNotifyEvents(result.data.email_notify_events));
+    setData(result.data); setThreshold(String(result.data.threshold)); setRegistration(result.data.registration_enabled); setPublicFinancialReport(result.data.public_financial_report_enabled === true); setEmailNotify(result.data.email_notify_enabled === true); setEmailEvents(normalizeNotifyEvents(result.data.email_notify_events));
   };
   useEffect(() => { if (identity.roles.includes('admin')) load().catch((err) => setError(err.message)); }, []);
   const run = async (task, message) => {
@@ -191,6 +192,7 @@ export function AdminPanel({ identity }) {
     {!data ? <div className="panel-empty">加载中…</div> : <>
       <div className="settings-grid admin-settings">
         <section className="panel detail-panel"><h2>注册设置</h2><form onSubmit={(e) => { e.preventDefault(); run(() => request('update_registration', { enabled: registration }), '注册设置已保存。'); }}><fieldset disabled={busy}><label className="check-row registration-switch"><input type="checkbox" role="switch" checked={registration} onChange={(e) => setRegistration(e.target.checked)} />允许新用户注册</label><p className="hint">关闭后，已有用户仍可登录，管理员仍可添加用户。</p><Button kind="secondary">保存设置</Button></fieldset></form></section>
+        <section className="panel detail-panel"><h2>公开财报</h2><form onSubmit={(e) => { e.preventDefault(); run(() => request('update_public_financial_report', { enabled: publicFinancialReport }), '公开财报设置已保存。'); }}><fieldset disabled={busy}><label className="check-row registration-switch"><input type="checkbox" role="switch" checked={publicFinancialReport} onChange={(e) => setPublicFinancialReport(e.target.checked)} />允许无需登录查看公开财报</label><p className="hint warn">公开页面会展示报销人姓名、付款日期、金额、费用类别和部门 / 活动。姓名来自申请人的当前资料，类别和部门由申请人自由填写；开启前请检查这些内容是否适合公开。</p><p className="hint">公开入口：<a href="/report" target="_blank" rel="noreferrer">/report</a>。关闭后接口不返回任何财报明细。</p><Button kind="secondary">保存设置</Button></fieldset></form></section>
         <section className="panel detail-panel"><h2>QQ 群提醒</h2><form onSubmit={(e) => { e.preventDefault(); run(() => request('update_qq_notify', { enabled: qqNotify, group_openid: qqGroup, events: qqEvents }), 'QQ提醒设置已保存。'); }}><fieldset disabled={busy}>
           <label className="check-row"><input type="checkbox" role="switch" checked={qqNotify} onChange={(e) => setQqNotify(e.target.checked)} />启用 QQ 群提醒</label>
           <label>目标群 OpenID<input value={qqGroup} maxLength={128} onChange={(e) => setQqGroup(e.target.value)} placeholder="机器人事件中的 group_openid，不是数字群号" /></label>
