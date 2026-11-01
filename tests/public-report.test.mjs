@@ -83,11 +83,11 @@ test('公开财报日期必须完整、有效、有序且不超过五年', () =>
 
 test('公开 API 无需会话，并只通过受限 RPC 取得记录', async () => {
   rpcCalls.length = 0; tablesRead.length = 0;
-  rpcResult = { enabled: true, records: [{ payment_date: '2026-10-02', amount: 12.34, category: '材料', department: '活动组', purpose: 'private', owner_id: 'secret' }] };
+  rpcResult = { enabled: true, records: [{ payment_date: '2026-10-02', amount: 12.34, category: '材料', department: '活动组', applicant_name: '张三', purpose: 'private', owner_id: 'secret', username: 'private-user' }] };
   const result = await request({ action: 'public_financial_report', start: '2026-10-02', end: '2026-10-31' });
   assert.equal(result.status, 200);
   assert.deepEqual(rpcCalls[0], { name: 'app_public_financial_report', args: { p_start: '2026-10-02', p_end: '2026-10-31' } });
-  assert.deepEqual(result.data, { enabled: true, records: [{ payment_date: '2026-10-02', amount: 12.34, category: '材料', department: '活动组' }] });
+  assert.deepEqual(result.data, { enabled: true, records: [{ payment_date: '2026-10-02', amount: 12.34, category: '材料', department: '活动组', applicant_name: '张三' }] });
   assert.deepEqual(tablesRead, []); // public request does not resolve a user or query business tables
 });
 
@@ -100,13 +100,34 @@ test('公开关闭时 API 清空记录；无效日期不会发起 RPC', async ()
   assert.equal(rpcCalls.length, 1);
 });
 
-test('公开 RPC 投影校验并剔除额外字段与异常记录', () => {
-  assert.deepEqual(projectPublicFinancialRecords([{ payment_date: '2026-10-02', amount: '12.34', category: '材料', department: '活动组', actor_id: 'hidden' }]), [
-    { payment_date: '2026-10-02', amount: 12.34, category: '材料', department: '活动组' },
+test('公开 RPC 投影只允许姓名白名单并剔除用户标识等额外字段', () => {
+  assert.deepEqual(projectPublicFinancialRecords([{ payment_date: '2026-10-02', amount: '12.34', category: '材料', department: '活动组', applicant_name: '张三', actor_id: 'hidden', username: 'hidden', email: 'hidden' }]), [
+    { payment_date: '2026-10-02', amount: 12.34, category: '材料', department: '活动组', applicant_name: '张三' },
   ]);
-  for (const records of [[{ payment_date: '2026-02-30', amount: 1, category: 'x', department: 'y' }], [{ payment_date: '2026-10-01', amount: -1, category: 'x', department: 'y' }], Array(5001).fill({})]) {
+  const emojiName = '😀'.repeat(41);
+  assert.equal(projectPublicFinancialRecords([{ payment_date: '2026-10-01', amount: 1, category: 'x', department: 'y', applicant_name: emojiName }])[0].applicant_name, emojiName);
+  for (const records of [[{ payment_date: '2026-02-30', amount: 1, category: 'x', department: 'y', applicant_name: '' }], [{ payment_date: '2026-10-01', amount: -1, category: 'x', department: 'y', applicant_name: '' }], [{ payment_date: '2026-10-01', amount: 1, category: 'x', department: 'y' }], [{ payment_date: '2026-10-01', amount: 1, category: 'x', department: 'y', applicant_name: 42 }], [{ payment_date: '2026-10-01', amount: 1, category: 'x', department: 'y', applicant_name: '张'.repeat(81) }], [{ payment_date: '2026-10-01', amount: 1, category: 'x', department: 'y', applicant_name: '😀'.repeat(81) }], Array(5001).fill({})]) {
     assert.throws(() => projectPublicFinancialRecords(records));
   }
+});
+
+test('公开明细显示申请人姓名并按 React 文本渲染', () => {
+  hookValues = [
+    { start: '2026-10-01', end: '2026-10-31' }, 'month',
+    [{ payment_date: '2026-10-02', amount: 12.34, category: '材料', department: '活动组', applicant_name: '张三 <测试>' }],
+    true, false, '', '', '',
+  ];
+  const tree = renderPublicReport();
+  const text = [];
+  const collect = (node) => {
+    if (Array.isArray(node)) { node.forEach(collect); return; }
+    if (typeof node === 'string' || typeof node === 'number') { text.push(String(node)); return; }
+    if (node && typeof node === 'object') collect(node.props?.children);
+  };
+  collect(tree);
+  assert.ok(text.includes('报销人'));
+  assert.ok(text.includes('张三 <测试>'));
+  assert.ok(text.join(' ').includes('资料更新后历史记录中的姓名也会更新'));
 });
 
 test('管理员开关经过会话和角色校验后才调用数据库 RPC', async () => {

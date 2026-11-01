@@ -239,12 +239,14 @@ export function projectPublicFinancialRecords(value: unknown) {
     const paymentDate = String(row.payment_date ?? '')
     const category = String(row.category ?? '')
     const department = String(row.department ?? '')
+    const applicantName = row.applicant_name
     const amount = Number(row.amount)
     if (!BEIJING_DAY.test(paymentDate) || !Number.isFinite(Date.parse(paymentDate)) || new Date(paymentDate).toISOString().slice(0, 10) !== paymentDate
-      || !Number.isFinite(amount) || amount <= 0 || amount > 10000000 || category.length > 80 || department.length > 80) {
+      || !Number.isFinite(amount) || amount <= 0 || amount > 10000000 || category.length > 80 || department.length > 80
+      || typeof applicantName !== 'string' || Array.from(applicantName).length > 80) {
       throw new Error('公开财报记录格式无效。')
     }
-    return { payment_date: paymentDate, amount, category, department }
+    return { payment_date: paymentDate, amount, category, department, applicant_name: applicantName }
   })
 }
 

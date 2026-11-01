@@ -46,7 +46,7 @@ begin
   if report ->> 'enabled' <> 'true' or jsonb_array_length(report -> 'records') <> 1 then
     raise exception '付款时间北京时间边界或已付款范围有误：%', report;
   end if;
-  if report -> 'records' -> 0 <> jsonb_build_object('payment_date','2026-10-02','amount',12.34,'category','材料','department','活动组') then
+  if report -> 'records' -> 0 <> jsonb_build_object('payment_date','2026-10-02','amount',12.34,'category','材料','department','活动组','applicant_name','普通成员') then
     raise exception '公开字段投影不正确：%', report;
   end if;
   if jsonb_array_length((public.app_public_financial_report('2026-10-01','2026-10-01') -> 'records')) <> 0 then
